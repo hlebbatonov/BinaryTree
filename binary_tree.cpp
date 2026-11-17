@@ -1,3 +1,10 @@
+#include <stdio.h>
+#include <sys/stat.h>
+#include <assert.h>
+#include <errno.h>
+#include <string.h>
+#include <ctype.h>
+
 #include "binary_tree.h"
 
 #define VERIFY_NULL_POINTER(pointer) do                    \
@@ -9,17 +16,19 @@
 
 #define $(x) #x
 
-void          BinTreeRemoveSubtree(bin_tree_node_t* node);
-BinTreeErrors BinTreeVerifySubtree(bin_tree_node_t* node, unsigned int* curr_num_of_elems);
-BinTreeErrors BinTreeLispDumpNode(bin_tree_node_t* node, FILE* lisp_file);
-BinTreeErrors BinTreeGraphDumpSubtree(bin_tree_node_t* node, FILE* html_file);
-const char* BinTreePointerToString(bin_tree_node_t* pointer, char* buffer);
-
+static void          BinTreeRemoveSubtree(bin_tree_node_t* node);
+static BinTreeErrors BinTreeVerifySubtree(bin_tree_node_t* node, unsigned int* curr_num_of_elems);
+static BinTreeErrors BinTreeLispDumpNode(bin_tree_node_t* node, FILE* lisp_file);
+static BinTreeErrors BinTreeGraphDumpSubtree(bin_tree_node_t* node, FILE* html_file);
+static void BinTreePointerToString(bin_tree_node_t* pointer, char* buffer);
+static BinTreeErrors BinTreeLispGetNodeFromBuffer(bin_tree_node_t** node, const char** curr_pos, size_t* curr_num_of_nodes);
+static BinTreeErrors BinTreeAllocateNode(bin_tree_node_t** node, bin_tree_elem_t elem, bin_tree_node_t* parent);
+static void BinTreeSkipSpaces(const char** curr_pos);
 
 BinTreeErrors BinTreeInit(bin_tree_t* tree, int (*comparator_func)(bin_tree_elem_t, bin_tree_elem_t))
 {
     VERIFY_NULL_POINTER(tree);
-    VERIFY_NULL_POINTER(comparator_func);
+    //VERIFY_NULL_POINTER(comparator_func);
     tree->root = NULL;
     tree->num_of_nodes = 0;
     tree->bin_tree_comparator = comparator_func;
@@ -36,7 +45,7 @@ BinTreeErrors BinTreeRemove(bin_tree_t* tree)
     return BIN_TREE_ERR_OK;
 }
 
-void BinTreeRemoveSubtree(bin_tree_node_t* node)
+static void BinTreeRemoveSubtree(bin_tree_node_t* node)
 {
     if (node == NULL) return ;
 
@@ -52,19 +61,15 @@ void BinTreeRemoveSubtree(bin_tree_node_t* node)
 
 BinTreeErrors BinTreeAddElem(bin_tree_t* tree, bin_tree_elem_t elem)
 {
-    bin_tree_node_t* new_node = (bin_tree_node_t*)calloc(1, sizeof(bin_tree_node_t));
-    if (new_node == NULL) return BIN_TREE_ERR_NODE_CALLOC_ERROR;
-
-    new_node->data = elem;
-    new_node->left = NULL;
-    new_node->right = NULL;
+    VERIFY_NULL_POINTER(tree);
 
     if (tree->root == NULL)
     {
-        tree->root = new_node;
+        VERIFY_ERROR(BinTreeAllocateNode(&(tree->root), elem, NULL));
         tree->num_of_nodes = 1;
         return BIN_TREE_ERR_OK;
     }
+
     VERIFY_ERROR(BinTreeVerify(tree));
 
     bin_tree_node_t* curr_node = tree->root;
@@ -78,11 +83,11 @@ BinTreeErrors BinTreeAddElem(bin_tree_t* tree, bin_tree_elem_t elem)
 
         if (cmp_res < 0) curr_node = curr_node->left;
         else if (cmp_res > 0) curr_node = curr_node->right;
-        else {free(new_node); return BIN_TREE_ERR_DUPLICATE_ELEM;}
+        else return BIN_TREE_ERR_DUPLICATE_ELEM;
     }
-    new_node->parent = parent_node;
-    if (cmp_res < 0) parent_node->left = new_node;
-    else if (cmp_res > 0) parent_node->right = new_node;
+
+    bin_tree_node_t** new_node_ptr = (cmp_res < 0) ? &(parent_node->left) : &(parent_node->right);
+    VERIFY_ERROR(BinTreeAllocateNode(new_node_ptr, elem, parent_node));
     tree->num_of_nodes++;
     return BIN_TREE_ERR_OK;
 }
@@ -97,7 +102,7 @@ BinTreeErrors BinTreeVerify(bin_tree_t* tree)
     return BIN_TREE_ERR_OK;
 }
 
-BinTreeErrors BinTreeVerifySubtree(bin_tree_node_t* node, unsigned int* curr_num_of_elems)
+static BinTreeErrors BinTreeVerifySubtree(bin_tree_node_t* node, unsigned int* curr_num_of_elems)
 {
     if (node == NULL) return BIN_TREE_ERR_OK;
     (*curr_num_of_elems)++;
@@ -105,6 +110,22 @@ BinTreeErrors BinTreeVerifySubtree(bin_tree_node_t* node, unsigned int* curr_num
     if (*curr_num_of_elems > MAX_CAPACITY) return BIN_TREE_ERR_LENGTH_TOO_BIG;
     VERIFY_ERROR(BinTreeVerifySubtree(node->left, curr_num_of_elems));
     VERIFY_ERROR(BinTreeVerifySubtree(node->right, curr_num_of_elems));
+    return BIN_TREE_ERR_OK;
+}
+
+static BinTreeErrors BinTreeAllocateNode(bin_tree_node_t** node, bin_tree_elem_t elem, bin_tree_node_t* parent)
+{
+    if (node == NULL) return BIN_TREE_ERR_NULL_POINTER;
+
+    bin_tree_node_t* new_node = (bin_tree_node_t*)calloc(1, sizeof(bin_tree_node_t));
+    if (new_node == NULL) return BIN_TREE_ERR_NODE_CALLOC_ERROR;
+
+    new_node->data   = elem;
+    new_node->parent = parent;
+    new_node->left   = NULL;
+    new_node->right  = NULL;
+
+    *node = new_node;
     return BIN_TREE_ERR_OK;
 }
 
@@ -127,7 +148,7 @@ BinTreeErrors BinTreeLispDumpTree(bin_tree_t* tree, const char* lisp_filename)
     FILE* lisp_file = fopen(lisp_filename, "w");
     if (lisp_file == NULL)
     {
-        fprintf(stderr, "Error: no such file <%s>\n", lisp_filename);
+        fprintf(stderr, "Error: cannot open file <%s>: %s\n", lisp_filename, strerror(errno));
         return BIN_TREE_ERR_FILE_NOT_OPENED;
     }
 
@@ -137,14 +158,14 @@ BinTreeErrors BinTreeLispDumpTree(bin_tree_t* tree, const char* lisp_filename)
     return BIN_TREE_ERR_OK;
 }
 
-BinTreeErrors BinTreeLispDumpNode(bin_tree_node_t* node, FILE* lisp_file)
+static BinTreeErrors BinTreeLispDumpNode(bin_tree_node_t* node, FILE* lisp_file)
 {
     if (lisp_file == NULL) return BIN_TREE_ERR_FILE_NOT_OPENED;
 
     fprintf(lisp_file, "(");
     if (node == NULL) {fprintf(lisp_file, ")"); return BIN_TREE_ERR_OK;}
 
-    fprintf(lisp_file, PRINTING_SPEC, node->data);
+    fprintf(lisp_file, BIN_TREE_ELEM_SPEC, node->data);
     BinTreeLispDumpNode(node->left, lisp_file);
     BinTreeLispDumpNode(node->right, lisp_file);
 
@@ -165,7 +186,7 @@ BinTreeErrors BinTreeGraphDumpTree(bin_tree_t* tree, const char* dot_filename)
     FILE* dot_file = fopen(dot_filename, "w");
     if (dot_file == NULL)
     {
-        fprintf(stderr, "Error: no such file <%s>\n", dot_filename);
+        fprintf(stderr, "Error: cannot open file <%s>: %s\n", dot_filename, strerror(errno));
         return BIN_TREE_ERR_FILE_NOT_OPENED;
     }
 
@@ -185,7 +206,7 @@ BinTreeErrors BinTreeGraphDumpTree(bin_tree_t* tree, const char* dot_filename)
     return BIN_TREE_ERR_OK;
 }
 
-BinTreeErrors BinTreeGraphDumpSubtree(bin_tree_node_t* node, FILE* dot_file)
+static BinTreeErrors BinTreeGraphDumpSubtree(bin_tree_node_t* node, FILE* dot_file)
 {
     if (dot_file == NULL) {fprintf(stderr, "Error: no dot file\n"); return BIN_TREE_ERR_FILE_NOT_OPENED;}
     if (node == NULL) return BIN_TREE_ERR_OK;
@@ -194,11 +215,15 @@ BinTreeErrors BinTreeGraphDumpSubtree(bin_tree_node_t* node, FILE* dot_file)
     char right_str[LEN_OF_POINTER_NAME]  = {};
     char parent_str[LEN_OF_POINTER_NAME] = {};
 
+    BinTreePointerToString(node->left, left_str);
+    BinTreePointerToString(node->right, right_str);
+    BinTreePointerToString(node->parent, parent_str);
+
     if (node->left != NULL || node->right != NULL)
     {
-        fprintf(dot_file, "node_%p [label=\"{data: %d | pointer: %p| {left: %s | right: %s} | parent: %s}\", \
-        fillcolor=\"#E3F2FD\"];\n", (void*)node, node->data, (void*)node, BinTreePointerToString(node->left, left_str),
-        BinTreePointerToString(node->right, right_str), BinTreePointerToString(node->parent, parent_str));
+        fprintf(dot_file, "node_%p [label=\"{data: " BIN_TREE_ELEM_SPEC " | pointer: %p| \
+        {left: %s | right: %s} | parent: %s}\", \
+        fillcolor=\"#E3F2FD\"];\n", (void*)node, node->data, (void*)node, left_str, right_str, parent_str);
 
         if (node->left != NULL)
         {
@@ -225,27 +250,27 @@ BinTreeErrors BinTreeGraphDumpSubtree(bin_tree_node_t* node, FILE* dot_file)
         }
     }
     else
-        fprintf(dot_file, "node_%p [label=\"{data: %d | pointer: %p| {left: %s | right: %s} | parent: %s}\", \
-        fillcolor=\"#e0d6f1\"];\n", (void*)node, node->data, (void*)node, BinTreePointerToString(node->left, left_str),
-        BinTreePointerToString(node->right, right_str), BinTreePointerToString(node->parent, parent_str));
+        fprintf(dot_file, "node_%p [label=\"{data: " BIN_TREE_ELEM_SPEC " | pointer: %p| \
+        {left: %s | right: %s} | parent: %s}\", \
+        fillcolor=\"#e0d6f1\"];\n", (void*)node, node->data, (void*)node, left_str, right_str, parent_str);
 
     return BIN_TREE_ERR_OK;
 }
 
-const char* BinTreePointerToString(bin_tree_node_t* pointer, char* buffer)
+static void BinTreePointerToString(bin_tree_node_t* pointer, char* buffer)
 {
-    if (buffer == NULL) return NULL;
+    assert(buffer != NULL);
 
     if (pointer == NULL)
-        return "NULL";
-
-    snprintf(buffer, LEN_OF_POINTER_NAME, "%p", (void*)pointer);
-    return buffer;
+        snprintf(buffer, LEN_OF_POINTER_NAME, "NULL");
+    else
+        snprintf(buffer, LEN_OF_POINTER_NAME, "%p", (void*)pointer);
 }
 
 //!SECTION
-/*
-BinTreeErrors BinTreeGetTreeFromFile(bin_tree_elem_t* tree, const char* lisp_filename)
+
+//SECTION - Read functions
+BinTreeErrors BinTreeGetTreeFromFile(bin_tree_t* tree, const char* lisp_filename)
 {
     if (tree == NULL)
     {
@@ -266,10 +291,90 @@ BinTreeErrors BinTreeGetTreeFromFile(bin_tree_elem_t* tree, const char* lisp_fil
         return BIN_TREE_ERR_FILE_NOT_OPENED;
     }
 
-    BinTreeLispGotNodeFromFile(tree->root, lisp_file);
+    struct stat lisp_file_stat = {};
+    if (stat(lisp_filename, &lisp_file_stat) != 0)
+    {
+        fprintf(stderr, "Error: can't get size of file <%s>: %s\n", lisp_filename, strerror(errno));
+        fclose(lisp_file);
+        return BIN_TREE_ERR_FILE_NOT_OPENED;
+    }
 
+    size_t lisp_file_size = (size_t)lisp_file_stat.st_size;
+    char* buffer = (char*)calloc(lisp_file_size, sizeof(char));
+    if (buffer == NULL)
+    {
+        fprintf(stderr, "Error: calloc failed for file buffer\n");
+        fclose(lisp_file);
+        return BIN_TREE_ERR_NODE_CALLOC_ERROR;
+    }
+
+    size_t bytes_read = fread(buffer, sizeof(char), lisp_file_size, lisp_file);
+    buffer[bytes_read] = '\0';
+    fclose(lisp_file);
+
+    const char* curr_pos = buffer;
+    size_t curr_num_of_nodes = 0;
+    BinTreeErrors err = BinTreeLispGetNodeFromBuffer(&(tree->root), &curr_pos, &curr_num_of_nodes);
+    if (err != BIN_TREE_ERR_OK) {BinTreeRemove(tree); return err;}
+
+    free(buffer);
     fclose(lisp_file);
     return BIN_TREE_ERR_OK;
 
 }
-*/
+
+static BinTreeErrors BinTreeLispGetNodeFromBuffer(bin_tree_node_t** node, const char** curr_pos, size_t* curr_num_of_nodes)
+{
+    VERIFY_NULL_POINTER(node);
+    VERIFY_NULL_POINTER(curr_num_of_nodes);
+    if (curr_pos == NULL) return BIN_TREE_ERR_FILE_NOT_OPENED;
+
+    BinTreeSkipSpaces(curr_pos);
+    if (**curr_pos != '(') return BIN_TREE_SYNTAX_ERR;
+
+    (*curr_pos)++;
+
+    BinTreeSkipSpaces(curr_pos);
+    if (**curr_pos == ')') {(*curr_pos)++; *node = NULL; return BIN_TREE_ERR_OK;}
+
+    const char* data_start_pos = *curr_pos;
+    while (**curr_pos != '\0' && **curr_pos != '(' && **curr_pos != ')') {(*curr_pos)++;}
+
+    if (**curr_pos == '\0' || *curr_pos == data_start_pos) return BIN_TREE_SYNTAX_ERR;
+
+    const char* data_end_pos = *curr_pos;
+    while (data_end_pos > data_start_pos && isspace((unsigned char)*(data_end_pos - 1))) {data_end_pos--;}
+
+    if (data_end_pos == data_start_pos) return BIN_TREE_SYNTAX_ERR;
+
+    bin_tree_elem_t elem = {};
+
+    #if defined(BIN_TREE_TYPE_INT)
+        char* end_ptr = NULL;
+        elem = (bin_tree_elem_t)strtol(data_start_pos, &end_ptr, 10);
+        if (end_ptr != data_end_pos) return BIN_TREE_SYNTAX_ERR;
+    #elif defined(BIN_TREE_TYPE_STR)
+        elem = (char*)calloc((size_t)(data_end_pos - data_start_pos) + 1, sizeof(char));
+        if (elem == NULL) return BIN_TREE_ERR_NODE_CALLOC_ERROR;
+        memcpy(elem, data_start_pos, (size_t)(data_end_pos - data_start_pos));
+    #endif
+
+    VERIFY_ERROR(BinTreeAllocateNode(node, elem, NULL));
+    (*curr_num_of_nodes)++;
+    VERIFY_ERROR(BinTreeLispGetNodeFromBuffer(&((*node)->left),  curr_pos, curr_num_of_nodes));
+    VERIFY_ERROR(BinTreeLispGetNodeFromBuffer(&((*node)->right), curr_pos, curr_num_of_nodes));
+    if ((*node)->left  != NULL) (*node)->left->parent  = *node;
+    if ((*node)->right != NULL) (*node)->right->parent = *node;
+
+    BinTreeSkipSpaces(curr_pos);
+    if (**curr_pos != ')') return BIN_TREE_SYNTAX_ERR;
+    (*curr_pos)++;
+    return BIN_TREE_ERR_OK;
+}
+
+static void BinTreeSkipSpaces(const char** curr_pos)
+{
+    while (**curr_pos != '\0' && isspace((unsigned char)**curr_pos)) {(*curr_pos)++;}
+}
+
+//!SECTION
